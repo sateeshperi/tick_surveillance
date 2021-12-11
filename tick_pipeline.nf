@@ -312,23 +312,37 @@ check_params_and_input()
 /* 
   Check for existence of metadata file
 */
-Channel
-    .fromPath(params.metadata, checkIfExists: true) 
-    .set {post_metadata_check_ch}
-
+post_metadata_check_ch = Channel.fromPath(params.metadata, checkIfExists: true) 
                                                                                 
 /* 
   Read in the targets tsv-format file that describes the expected target sequences. 
 
   Use this to generate internal control datasets. 
 */
-Channel
-    .fromPath(params.targets, checkIfExists: true)
-    .splitCsv(header:true, sep:"\t", strip:true)
-    .set { targets_ch }
-                                                                                
+targets_ch = Channel.fromPath(params.targets, checkIfExists: true)
+                    .splitCsv(header:true, sep:"\t", strip:true)
 
 
+workflow {
+
+
+  GENERATE_REFSEQ_FASTAS( targets_ch )
+  COMBINE_REFSEQ_FASTA()
+  SETUP_INDEXES()
+  SIMULATE_REFSEQ_FASTQ()
+  INITIAL_QC()
+  INITIAL_MUTLIQC()
+  TRIM_PRIMER_SEQS()
+  COLLECT_CUTADAPT_OUTPUT()
+  POST_TRIM_QC()
+  POST_TRIM_MULTIQC()
+  RUN_DADA_ON_TRIMMED()
+  COMPARE_OBSERVED_SEQUENCES_TO_REF_SEQS()
+  ASSIGN_OBSERVED_SEQUENCES_TO_REF_SEQS()
+  BLAST_UNASSIGNED_SEQUENCES()
+  ASSIGN_NON_REF_SEQS()
+
+}
 /* 
   generate one fasta for each reference sequence
 */
@@ -337,7 +351,7 @@ process GENERATE_REFSEQ_FASTAS {
   label 'process_low'
 
   input:                                                                        
-  val targets from targets_ch
+  val targets
 
   output:                                                                        
   path ("${targets.ref_sequence_name}.fasta") into refseq_fastas_ch
@@ -346,7 +360,7 @@ process GENERATE_REFSEQ_FASTAS {
   // makes fasta formatted records for each targets 
   script:                                                                       
   """
-  printf ">%s\n%s\n" $targets.ref_sequence_name $targets.sequence > ${targets.ref_sequence_name}.fasta
+  printf ">%s\n%s\n" ${targets.ref_sequence_name} ${targets.sequence} > ${targets.ref_sequence_name}.fasta
   """
 }
 
@@ -447,10 +461,8 @@ Channel.fromFilePairs("${params.fastq_dir}/*_R{1,2}*.fastq*", size: 2, checkIfEx
  contain an expected F/R primer pair at the ends. 
 
 */
-Channel.fromPath(params.primers, checkIfExists: true)
-       .splitCsv(header:true, sep:"\t", strip:true)
-       .set { primers_ch }
-
+primers_ch = Channel.fromPath(params.primers, checkIfExists: true)
+                    .splitCsv(header:true, sep:"\t", strip:true)
 
 /*
    this combinatorially mixes the fastq file pairs with the primer sequences
