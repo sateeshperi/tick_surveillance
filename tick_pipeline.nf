@@ -1,4 +1,5 @@
 #!/usr/bin/env nextflow
+nextflow.enable.dsl=2
 
 /*
     CDC Tick Surveillance Amplicon Sequencing Analysis Pipeline
@@ -312,8 +313,7 @@ check_params_and_input()
   Check for existence of metadata file
 */
 Channel
-    .fromPath("${params.metadata}", 
-                   checkIfExists: true) 
+    .fromPath(params.metadata, checkIfExists: true) 
     .set {post_metadata_check_ch}
 
                                                                                 
@@ -332,7 +332,9 @@ Channel
 /* 
   generate one fasta for each reference sequence
 */
-process generate_refseq_fastas {                                                      
+process GENERATE_REFSEQ_FASTAS {
+  tag{}
+  label 'process_low'
 
   input:                                                                        
   val targets from targets_ch
@@ -351,8 +353,9 @@ process generate_refseq_fastas {
 /* 
   concatenate individual fasta into one big reference sequence file 
 */
-process combine_refseq_fasta {                                                      
-  publishDir "${params.refseq_dir}", mode: 'link'                                   
+process COMBINE_REFSEQ_FASTA {
+
+  publishDir(params.refseq_dir, mode: 'copy')                                 
 
   input:                                                                        
   path (individual_fastas) from refseq_fastas_ch.collect()
@@ -372,8 +375,9 @@ process combine_refseq_fasta {
 
    Only do this once at beginning.
 */
-process setup_indexes {
-  publishDir "${params.refseq_dir}", mode: 'link'                                   
+process SETUP_INDEXES {
+
+  publishDir(params.refseq_dir, mode: 'copy')                                 
 
   input:
   path (refseq_fasta) from refseq_fasta_ch
@@ -404,8 +408,9 @@ control_dataset_sizes_ch  = Channel.from(1, 10, 100)
   generate simulated fastq reads for each reference sequence 
   this will serve as an internal control
 */
-process simulate_refseq_fastq {
-  publishDir "${params.simulated_fastq_dir}", mode: 'link'                                   
+process SIMULATE_REFSEQ_FASTQ {
+
+  publishDir(params.simulated_fastq_dir, mode: 'copy')                                   
 
   input:                                                                        
   tuple val (dataset_size), path(ref_fasta), val(target) from control_dataset_sizes_ch.combine(refseq_fastas_simulate_ch)
@@ -431,12 +436,8 @@ process simulate_refseq_fastq {
  Expecting files with _R1 or _R2 in their names corresponding to paired-end reads
 */
 
-Channel
-    .fromFilePairs("${params.fastq_dir}/*_R{1,2}*.fastq*", 
-                   size: 2, 
-                   checkIfExists: true, 
-                   maxDepth: 1)
-    .into {samples_ch_qc; samples_ch_trim}
+Channel.fromFilePairs("${params.fastq_dir}/*_R{1,2}*.fastq*", size: 2, checkIfExists: true, maxDepth: 1)
+       .into {samples_ch_qc; samples_ch_trim}
 
 /* 
 
@@ -446,10 +447,9 @@ Channel
  contain an expected F/R primer pair at the ends. 
 
 */
-Channel
-    .fromPath(params.primers, checkIfExists: true)
-    .splitCsv(header:true, sep:"\t", strip:true)
-    .set { primers_ch }
+Channel.fromPath(params.primers, checkIfExists: true)
+       .splitCsv(header:true, sep:"\t", strip:true)
+       .set { primers_ch }
 
 
 /*
@@ -480,7 +480,8 @@ String.metaClass.complement = {
 /*
  Run fastqc on input fastq 
 */
-process initial_qc {
+process INITIAL_QC {
+
   label 'lowmem'
 
   input:
@@ -504,7 +505,8 @@ process initial_qc {
 
  TODO: will this report old, accumulated fastqc reports if the pipeline is re-run without cleaning up the work directory?
 */
-process initial_multiqc {
+process INITIAL_MUTLIQC {
+
   publishDir "${params.outdir}", mode:'link'
 
   input:
@@ -541,7 +543,8 @@ process initial_multiqc {
 
 */
 
-process trim_primer_seqs {                                                      
+process TRIM_PRIMER_SEQS {
+
   label 'lowmem'
                                                                               
   input:                                                                      
@@ -605,7 +608,8 @@ process trim_primer_seqs {
   adapter sequences
 
 */
-process collect_cutadapt_output {                                               
+process COLLECT_CUTADAPT_OUTPUT {
+
   publishDir "${params.trimmed_outdir}", mode:'link'                                    
                                                                                 
   input:
@@ -648,7 +652,8 @@ process collect_cutadapt_output {
 /*
  Use fastqc to do QC on post-trimmed fastq
 */
-process post_trim_qc {
+process POST_TRIM_QC {
+
   label 'lowmem'
 
   input:
@@ -674,7 +679,8 @@ process post_trim_qc {
  TODO: will this report old fastqc reports if the pipeline is re-run?
 
 */
-process post_trim_multiqc {
+process POST_TRIM_MULTIQC {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
@@ -700,7 +706,8 @@ process post_trim_multiqc {
 
 */
 
-process run_dada_on_trimmed {
+process RUN_DADA_ON_TRIMMED {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
@@ -724,7 +731,8 @@ process run_dada_on_trimmed {
  This process aligns all of the unique sequences reported by dada2
  to the set of expected reference sequences using blastn.
 */
-process compare_observed_sequences_to_ref_seqs {
+process COMPARE_OBSERVED_SEQUENCES_TO_REF_SEQS {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
@@ -752,7 +760,8 @@ process compare_observed_sequences_to_ref_seqs {
   and decides whether those sequence are sufficiently similar to the reference 
   sequences to be assigned to them.
 */
-process assign_observed_sequences_to_ref_seqs {
+process ASSIGN_OBSERVED_SEQUENCES_TO_REF_SEQS {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
@@ -776,7 +785,8 @@ process assign_observed_sequences_to_ref_seqs {
  This process aligns all of the unique sequences reported by dada2
  to the set of expected reference sequences using blastn.
 */
-process blast_unassigned_sequences {
+process BLAST_UNASSIGNED_SEQUENCES {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
@@ -836,7 +846,8 @@ process blast_unassigned_sequences {
   }
 }
 
-process assign_non_ref_seqs {
+process ASSIGN_NON_REF_SEQS {
+
   publishDir "${params.outdir}", mode: 'link'
 
   input:
