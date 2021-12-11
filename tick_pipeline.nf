@@ -327,8 +327,8 @@ workflow {
 
 
   GENERATE_REFSEQ_FASTAS( targets_ch )
-  COMBINE_REFSEQ_FASTA()
-  SETUP_INDEXES()
+  COMBINE_REFSEQ_FASTA(GENERATE_REFSEQ_FASTAS.out.refseq_fastas_ch.collect())
+  SETUP_INDEXES(COMBINE_REFSEQ_FASTA.out.refseq_fasta_ch)
   SIMULATE_REFSEQ_FASTQ()
   INITIAL_QC()
   INITIAL_MUTLIQC()
@@ -347,15 +347,15 @@ workflow {
   generate one fasta for each reference sequence
 */
 process GENERATE_REFSEQ_FASTAS {
-  tag{}
+
   label 'process_low'
 
   input:                                                                        
   val targets
 
   output:                                                                        
-  path ("${targets.ref_sequence_name}.fasta") into refseq_fastas_ch
-  tuple path ("${targets.ref_sequence_name}.fasta"), val (targets) into refseq_fastas_simulate_ch
+  path ("${targets.ref_sequence_name}.fasta"), emit: refseq_fastas_ch
+  tuple  val (targets), path ("${targets.ref_sequence_name}.fasta"), emit: refseq_fastas_simulate_ch
 
   // makes fasta formatted records for each targets 
   script:                                                                       
@@ -372,15 +372,15 @@ process COMBINE_REFSEQ_FASTA {
   publishDir(params.refseq_dir, mode: 'copy')                                 
 
   input:                                                                        
-  path (individual_fastas) from refseq_fastas_ch.collect()
+  path (individual_fastas)
 
   output:                                                                        
-  path ("reference_sequences.fasta") into refseq_fasta_ch
+  path ("reference_sequences.fasta"), emit: refseq_fasta_ch
 
   // makes fasta formatted records for each targets 
   script:                                                                       
   """
-  cat $individual_fastas > reference_sequences.fasta
+  cat ${individual_fastas} > reference_sequences.fasta
   """
 }
 
@@ -394,15 +394,15 @@ process SETUP_INDEXES {
   publishDir(params.refseq_dir, mode: 'copy')                                 
 
   input:
-  path (refseq_fasta) from refseq_fasta_ch
+  path (refseq_fasta)
 
   output:
   // this output will be a signal that indexes are setup and processes that
   // need them can proceed
-  val ("indexes_complete") into post_index_setup_ch
+  val ("indexes_complete"), emit: post_index_setup_ch
   
   // blast database
-  path ("${refseq_fasta}") into refseq_blast_db_ch
+  path ("${refseq_fasta}"), emit: refseq_blast_db_ch
 
   script:
   """
@@ -430,7 +430,7 @@ process SIMULATE_REFSEQ_FASTQ {
   tuple val (dataset_size), path(ref_fasta), val(target) from control_dataset_sizes_ch.combine(refseq_fastas_simulate_ch)
 
   output:                                                                        
-  tuple val ("${target.ref_sequence_name}_${dataset_size}"), path ("${target.ref_sequence_name}_${dataset_size}*.fastq") into simulated_fastq_ch
+  tuple val ("${target.ref_sequence_name}_${dataset_size}"), path ("${target.ref_sequence_name}_${dataset_size}*.fastq"), emit: simulated_fastq_ch
 
   script:                                                                       
 
@@ -438,8 +438,8 @@ process SIMULATE_REFSEQ_FASTQ {
   def fastq_prefix =  "${target.ref_sequence_name}_${dataset_size}"
   
   """
-  # ${params.script_dir}/simulate_fastq.pl -n $dataset_size -f $ref_fasta -pre $fastq_prefix -l ${params.simulated_read_length} -e ${params.simulated_error_profile_file}
-  ${params.script_dir}/simulate_fastq.pl -n $dataset_size -f $ref_fasta -pre $fastq_prefix -l ${params.simulated_read_length} 
+  # ${params.script_dir}/simulate_fastq.pl -n ${dataset_size} -f ${ref_fasta} -pre ${fastq_prefix} -l ${params.simulated_read_length} -e ${params.simulated_error_profile_file}
+  ${params.script_dir}/simulate_fastq.pl -n ${dataset_size} -f ${ref_fasta} -pre ${fastq_prefix} -l ${params.simulated_read_length} 
   """
 }
 
@@ -500,15 +500,15 @@ process INITIAL_QC {
   tuple val(sample_id), path(initial_fastq) from samples_ch_qc
 
   output:
-  val(sample_id) into post_initial_qc_ch
-  val(sample_id) into write_datasets_ch
+  val(sample_id), emit: post_initial_qc_ch
+  val(sample_id), emit: write_datasets_ch
   // TODO: count (?)
 
   script:
   """
   which fastqc
   mkdir -p  ${params.initial_fastqc_dir} 
-  fastqc -o ${params.initial_fastqc_dir} $initial_fastq 
+  fastqc -o ${params.initial_fastqc_dir} ${initial_fastq}
   """
 }
 
@@ -519,7 +519,7 @@ process INITIAL_QC {
 */
 process INITIAL_MUTLIQC {
 
-  publishDir "${params.outdir}", mode:'link'
+  publishDir("${params.outdir}", mode:'copy')
 
   input:
   val(all_sample_ids) from post_initial_qc_ch.collect()
@@ -571,7 +571,7 @@ process TRIM_PRIMER_SEQS {
 */
                                                                               
   output:                                                                     
-  tuple val(sample_id), path("*.R1_${primers.primer_name}.fastq.gz"), path("*.R2_${primers.primer_name}.fastq.gz") into primer_trimmed_ch_ungrouped
+  tuple val(sample_id), path("*.R1_${primers.primer_name}.fastq.gz"), path("*.R2_${primers.primer_name}.fastq.gz"), emit: primer_trimmed_ch_ungrouped
                                                                               
   script:                                                                     
   def primer_f_rc = primers.primer_f_seq.reverse().complement()                           
@@ -595,7 +595,7 @@ process TRIM_PRIMER_SEQS {
   # "Use --discard-untrimmed to throw away all read pairs in which R1 
   # doesn’t start with FWDPRIMER or in which R2 does not start with REVPRIMER"
   #
-  cutadapt $primer_args --discard-untrimmed  --minimum-length ${params.post_trim_min_length} $f1 $f2 -o ${sample_id}.R1_${primers.primer_name}.fastq.gz -p ${sample_id}.R2_${primers.primer_name}.fastq.gz
+  cutadapt ${primer_args} --discard-untrimmed  --minimum-length ${params.post_trim_min_length} $f1 $f2 -o ${sample_id}.R1_${primers.primer_name}.fastq.gz -p ${sample_id}.R2_${primers.primer_name}.fastq.gz
   """                                                                         
 }
                                                                                 
@@ -622,7 +622,7 @@ process TRIM_PRIMER_SEQS {
 */
 process COLLECT_CUTADAPT_OUTPUT {
 
-  publishDir "${params.trimmed_outdir}", mode:'link'                                    
+  publishDir("${params.trimmed_outdir}/cutadapt", mode:'copy')                      
                                                                                 
   input:
   // the groupTuple() operator here will consolidate tuples with a shared sample_id
@@ -630,7 +630,7 @@ process COLLECT_CUTADAPT_OUTPUT {
                                                                                 
   output:                                                                       
   val(sample_id) into post_trim_ch
-  tuple val(sample_id), path("*_trimmed.fastq.gz") into post_trim_qc_ch
+  tuple val(sample_id), path("*_trimmed.fastq.gz"), emit: post_trim_qc_ch
                                                                                 
   script:                                                                       
 
@@ -648,11 +648,11 @@ process COLLECT_CUTADAPT_OUTPUT {
   """                                                                           
   # concatenate the individually-trimmed files (one for each amplicon target)
   # note that cat will concatenate .gz files just fine
-  cat $individual_r1 > $f1
-  cat $individual_r2 > $f2
+  cat ${individual_r1} > ${f1}
+  cat ${individual_r2} > ${f2}
 
   # one last cutadapt command to remove adapter sequences and too-short read pairs
-  cutadapt $nextera_cutadapt \
+  cutadapt ${nextera_cutadapt} \
     -O ${params.adapters_min_overlap} \
     --minimum-length ${params.post_trim_min_length} \
     -o ${sample_id}_R1_trimmed.fastq.gz \
@@ -672,13 +672,13 @@ process POST_TRIM_QC {
   tuple val(sample_id), path(input_fastq) from post_trim_qc_ch
 
   output:
-  val(sample_id) into post_trim_multiqc_ch
+  val(sample_id), emit: post_trim_multiqc_ch
 
   script:
 
   """
   mkdir -p  ${params.post_trim_fastqc_dir} 
-  fastqc -o ${params.post_trim_fastqc_dir} $input_fastq
+  fastqc -o ${params.post_trim_fastqc_dir} ${input_fastq}
   """
 }
 
@@ -693,7 +693,7 @@ process POST_TRIM_QC {
 */
 process POST_TRIM_MULTIQC {
 
-  publishDir "${params.outdir}", mode: 'link'
+  publishDir("${params.outdir}", mode: 'copy')
 
   input:
   val(all_sample_ids) from post_trim_multiqc_ch.collect()
@@ -720,14 +720,14 @@ process POST_TRIM_MULTIQC {
 
 process RUN_DADA_ON_TRIMMED {
 
-  publishDir "${params.outdir}", mode: 'link'
+  publishDir("${params.outdir}", mode: 'copy')
 
   input:
   val(all_sample_ids) from post_trim_ch.collect()
 
   output:
-  path("observed_sequences.fasta") into post_dada_seq_ch
-  path("sequence_abundance_table.tsv") into post_dada_tidy_ch
+  path("observed_sequences.fasta"), emit: post_dada_seq_ch
+  path("sequence_abundance_table.tsv"), emit: post_dada_tidy_ch
 
   script:                                                                       
   """                                                                             
@@ -745,7 +745,7 @@ process RUN_DADA_ON_TRIMMED {
 */
 process COMPARE_OBSERVED_SEQUENCES_TO_REF_SEQS {
 
-  publishDir "${params.outdir}", mode: 'link'
+  publishDir("${params.outdir}", mode: 'copy')
 
   input:
   path(sequences) from post_dada_seq_ch
@@ -753,16 +753,16 @@ process COMPARE_OBSERVED_SEQUENCES_TO_REF_SEQS {
   path(refseq_blast_db) from refseq_blast_db_ch
 
   output:
-  path("${sequences}.bn_refseq") into post_compare_ch
+  path("${sequences}.bn_refseq"), emit: post_compare_ch
 
   script:                                                                       
   // this is almost the default blastn output except gaps replaces gapopens, because seems more useful!
   def blastn_columns = "qaccver saccver pident length mismatch gaps qstart qend sstart send evalue bitscore"
   """                                                                           
-  blastn -db ${params.refseq_dir}/${refseq_blast_db} -task blastn -evalue ${params.max_blast_refseq_evalue} -query $sequences -outfmt "6 $blastn_columns" -out ${sequences}.bn_refseq.no_header
+  blastn -db ${params.refseq_dir}/${refseq_blast_db} -task blastn -evalue ${params.max_blast_refseq_evalue} -query ${sequences} -outfmt "6 ${blastn_columns}" -out ${sequences}.bn_refseq.no_header
   # prepend blast output with the column names so we don't have to manually name them later
-  echo $blastn_columns > blast_header.no_perl
-  echo $blastn_columns | perl -p -e 's/ /\t/g' > blast_header 
+  echo ${blastn_columns} > blast_header.no_perl
+  echo ${blastn_columns} | perl -p -e 's/ /\t/g' > blast_header 
   cat blast_header ${sequences}.bn_refseq.no_header > ${sequences}.bn_refseq
   """             
 }
@@ -782,13 +782,13 @@ process ASSIGN_OBSERVED_SEQUENCES_TO_REF_SEQS {
   path(tidy_table) from post_dada_tidy_ch
 
   output:
-  path("unassigned_sequences.fasta") into post_assign_to_refseq_ch
+  path("unassigned_sequences.fasta"), emit: post_assign_to_refseq_ch
   path("identified_targets.xlsx")
   path("identified_targets.tsv")
 
   script:                                                                       
   """                                                                           
-  Rscript ${params.script_dir}/assign_observed_seqs_to_ref_seqs.R ${params.script_dir} $tidy_table $blast_output $metadata ${params.targets}
+  Rscript ${params.script_dir}/assign_observed_seqs_to_ref_seqs.R ${params.script_dir} ${tidy_table} ${blast_output} ${metadata} ${params.targets}
   """             
 }
 
@@ -873,7 +873,7 @@ process ASSIGN_NON_REF_SEQS {
 
   script:                                                                       
   """                                                                           
-  Rscript ${params.script_dir}/assign_non_ref_seqs.R ${params.script_dir} $unassigned_sequences $blast_output
+  Rscript ${params.script_dir}/assign_non_ref_seqs.R ${params.script_dir} ${unassigned_sequences} ${blast_output}
   """             
 }
 
