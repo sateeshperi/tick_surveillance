@@ -325,21 +325,34 @@ targets_ch = Channel.fromPath(params.targets, checkIfExists: true)
 
 workflow {
 
-
   GENERATE_REFSEQ_FASTAS( targets_ch )
-  COMBINE_REFSEQ_FASTA(GENERATE_REFSEQ_FASTAS.out.refseq_fastas_ch.collect())
+  
+  COMBINE_REFSEQ_FASTA(GENERATE_REFSEQ_FASTAS.out.refseq_fastas.collect())
+  
   SETUP_INDEXES(COMBINE_REFSEQ_FASTA.out.refseq_fasta_ch)
-  SIMULATE_REFSEQ_FASTQ()
-  INITIAL_QC()
-  INITIAL_MUTLIQC()
-  TRIM_PRIMER_SEQS()
+  
+  SIMULATE_REFSEQ_FASTQ( control_dataset_sizes_ch.combine(GENERATE_REFSEQ_FASTAS.out.refseq_fastas_simulate) )
+  
+  INITIAL_QC( samples_ch )
+  
+  INITIAL_MUTLIQC( INITIAL_QC.out.post_initial_qc.collect() )
+  
+  TRIM_PRIMER_SEQS( SETUP_INDEXES.out.post_index_setup, primers_and_samples_ch )
+  
   COLLECT_CUTADAPT_OUTPUT()
+  
   POST_TRIM_QC()
+  
   POST_TRIM_MULTIQC()
+  
   RUN_DADA_ON_TRIMMED()
+  
   COMPARE_OBSERVED_SEQUENCES_TO_REF_SEQS()
+  
   ASSIGN_OBSERVED_SEQUENCES_TO_REF_SEQS()
+  
   BLAST_UNASSIGNED_SEQUENCES()
+  
   ASSIGN_NON_REF_SEQS()
 
 }
@@ -351,11 +364,11 @@ process GENERATE_REFSEQ_FASTAS {
   label 'process_low'
 
   input:                                                                        
-  val targets
+  val( targets )
 
   output:                                                                        
-  path ("${targets.ref_sequence_name}.fasta"), emit: refseq_fastas_ch
-  tuple  val (targets), path ("${targets.ref_sequence_name}.fasta"), emit: refseq_fastas_simulate_ch
+  path("${targets.ref_sequence_name}.fasta")                       , emit: refseq_fastas
+  tuple  val (targets), path ("${targets.ref_sequence_name}.fasta"), emit: refseq_fastas_simulate
 
   // makes fasta formatted records for each targets 
   script:                                                                       
@@ -399,7 +412,7 @@ process SETUP_INDEXES {
   output:
   // this output will be a signal that indexes are setup and processes that
   // need them can proceed
-  val ("indexes_complete"), emit: post_index_setup_ch
+  val ("indexes_complete"), emit: post_index_setup
   
   // blast database
   path ("${refseq_fasta}"), emit: refseq_blast_db_ch
@@ -416,7 +429,7 @@ process SETUP_INDEXES {
 
 
 // the sizes of control datasets to make
-control_dataset_sizes_ch  = Channel.from(1, 10, 100)
+control_dataset_sizes_ch  = Channel.of(1, 10, 100)
 
 /* 
   generate simulated fastq reads for each reference sequence 
@@ -427,7 +440,7 @@ process SIMULATE_REFSEQ_FASTQ {
   publishDir(params.simulated_fastq_dir, mode: 'copy')                                   
 
   input:                                                                        
-  tuple val (dataset_size), path(ref_fasta), val(target) from control_dataset_sizes_ch.combine(refseq_fastas_simulate_ch)
+  tuple val (dataset_size), path(ref_fasta), val(target)
 
   output:                                                                        
   tuple val ("${target.ref_sequence_name}_${dataset_size}"), path ("${target.ref_sequence_name}_${dataset_size}*.fastq"), emit: simulated_fastq_ch
@@ -450,8 +463,7 @@ process SIMULATE_REFSEQ_FASTQ {
  Expecting files with _R1 or _R2 in their names corresponding to paired-end reads
 */
 
-Channel.fromFilePairs("${params.fastq_dir}/*_R{1,2}*.fastq*", size: 2, checkIfExists: true, maxDepth: 1)
-       .into {samples_ch_qc; samples_ch_trim}
+samples_ch = Channel.fromFilePairs("${params.fastq_dir}/*_R{1,2}*.fastq*", size: 2, checkIfExists: true, maxDepth: 1)
 
 /* 
 
@@ -469,7 +481,7 @@ primers_ch = Channel.fromPath(params.primers, checkIfExists: true)
    to be trimmed, creating a new channel with all possible combinations of
    input fastq and primer pair
 */
-primers_and_samples = primers_ch.combine(samples_ch_trim.concat(simulated_fastq_ch))   
+primers_and_samples_ch = primers_ch.combine(samples_ch.concat(SIMULATE_REFSEQ_FASTQ.out.simulated_fastq_ch))   
 
 
 
@@ -494,21 +506,21 @@ String.metaClass.complement = {
 */
 process INITIAL_QC {
 
+  publishDir("${params.outdir}/fastqc", mode:'copy')
+
   label 'lowmem'
 
   input:
-  tuple val(sample_id), path(initial_fastq) from samples_ch_qc
+  tuple val(sample_id), path(initial_fastq)
 
   output:
-  val(sample_id), emit: post_initial_qc_ch
-  val(sample_id), emit: write_datasets_ch
+  tuple val(sample_id), path("*_fastqc*"), emit: post_initial_qc
+  val(sample_id)                         , emit: write_datasets_ch
   // TODO: count (?)
 
   script:
   """
-  which fastqc
-  mkdir -p  ${params.initial_fastqc_dir} 
-  fastqc -o ${params.initial_fastqc_dir} ${initial_fastq}
+  fastqc ${initial_fastq}
   """
 }
 
@@ -519,10 +531,10 @@ process INITIAL_QC {
 */
 process INITIAL_MUTLIQC {
 
-  publishDir("${params.outdir}", mode:'copy')
+  publishDir("${params.outdir}/fastqc", mode:'copy')
 
   input:
-  val(all_sample_ids) from post_initial_qc_ch.collect()
+  val(all_sample_ids)
 
   output: 
   path("initial_qc_report.html")
@@ -557,11 +569,13 @@ process INITIAL_MUTLIQC {
 
 process TRIM_PRIMER_SEQS {
 
+  publishDir("${params.outdir}/cutadapt", mode:'copy')
+
   label 'lowmem'
                                                                               
   input:                                                                      
-  val("indexes_complete") from post_index_setup_ch
-  tuple val(primers), val(sample_id), path(initial_fastq) from primers_and_samples
+  val("indexes_complete")
+  tuple val(primers), val(sample_id), path(initial_fastq)
 
 /*
   tuple val(primer_name), 
